@@ -20,7 +20,13 @@ def parse_args():
     parser.add_argument("--mysql_table", required=True)
     parser.add_argument("--s3_bucket", required=True)
     parser.add_argument("--ddb_table", required=True)
-    parser.add_argument("--chunk_size", type=int, default=10000)
+    parser.add_argument("--chunk_size", type=int, default=50000)
+
+    args, unknown_args = parser.parse_known_args()
+
+    if unknown_args:
+        print(f"[INFO] Ignored Glue system args: {unknown_args}")
+
 
     return parser.parse_args()
 
@@ -77,7 +83,7 @@ def fetch_mysql_data(engine, table, last_ts, chunk_size):
 # Main Glue Job
 # -------------------------
 def main():
-    args = parse_args()
+    args, unknown_args = parser.parse_known_args()
 
     job_name = args.JOB_NAME
 

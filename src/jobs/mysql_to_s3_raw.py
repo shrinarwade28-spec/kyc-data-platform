@@ -1,210 +1,176 @@
+import argparse
 import sys
 import boto3
+import pymysql
 import pandas as pd
-from sqlalchemy import create_engine
 from datetime import datetime
 from io import StringIO
-from awsglue.utils import getResolvedOptions
 
-# ------------------------------------------------------
-# Glue Arguments (MANDATORY way)
-# ------------------------------------------------------
-args = getResolvedOptions(
-    sys.argv,
-    [
-        "JOB_NAME",
-        "mysql_host",
-        "mysql_user",
-        "mysql_password",
-        "mysql_db",
-        "mysql_table",
-        "s3_bucket",
-        "ddb_table",
-        "chunk_size"
-    ]
-)
 
-JOB_NAME = args["JOB_NAME"]
-MYSQL_HOST = args["mysql_host"]
-MYSQL_USER = args["mysql_user"]
-MYSQL_PASSWORD = args["mysql_password"]
-MYSQL_DB = args["mysql_db"]
-MYSQL_TABLE = args["mysql_table"]
-S3_BUCKET = args["s3_bucket"]
-DDB_TABLE_NAME = args["ddb_table"]
-CHUNK_SIZE = int(args["chunk_size"])
+# -------------------------------------------------------------------
+# ARGUMENT PARSING (Glue-compatible)
+# -------------------------------------------------------------------
+def parse_args():
+    parser = argparse.ArgumentParser()
 
-# ------------------------------------------------------
-# AWS Clients
-# ------------------------------------------------------
-s3 = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
-ddb_table = dynamodb.Table(DDB_TABLE_NAME)
+    parser.add_argument("--JOB_NAME", required=True)
+    parser.add_argument("--mysql_host", required=True)
+    parser.add_argument("--mysql_user", required=True)
+    parser.add_argument("--mysql_password", required=True)
+    parser.add_argument("--mysql_db", required=True)
+    parser.add_argument("--mysql_table", required=True)
 
-# ------------------------------------------------------
-# DynamoDB Helper Functions
-# ------------------------------------------------------
-def get_pipeline_item(table, pipeline_name):
-    response = table.get_item(
-        Key={"pipeline_name": pipeline_name}
+    parser.add_argument("--s3_bucket", required=True)
+    parser.add_argument("--ddb_table", required=True)
+
+    parser.add_argument("--chunk_size", type=int, default=10000)
+
+    return parser.parse_args()
+
+
+# -------------------------------------------------------------------
+# DYNAMODB HELPERS (SAFE FOR FIRST RUN)
+# -------------------------------------------------------------------
+def get_pipeline_state(dynamodb_table, job_name):
+    """
+    Safely fetch pipeline execution state from DynamoDB.
+    Handles first-run scenario where no item exists.
+    """
+    response = dynamodb_table.get_item(
+        Key={"pipeline_name": job_name}
     )
-    return response.get("Item")
 
+    item = response.get("Item")
 
-def get_pipeline_state(table, pipeline_name):
-    item = get_pipeline_item(table, pipeline_name)
     if not item:
-        print(f"[INFO] First run detected for job: {pipeline_name}")
-        return "INIT"
-    return item.get("pipeline_execution_state", "INIT")
+        print(f"[INFO] First run detected for job: {job_name}")
+        return {
+            "state": "INIT",
+            "last_watermark": None
+        }
 
-
-def get_last_watermark(table, pipeline_name):
-    item = get_pipeline_item(table, pipeline_name)
-    if not item:
-        return None
-    return item.get("last_watermark")
-
-
-def update_pipeline_state(
-    table,
-    pipeline_name,
-    state,
-    watermark=None
-):
-    item = {
-        "pipeline_name": pipeline_name,
-        "pipeline_execution_state": state,
-        "last_updated_ts": datetime.utcnow().isoformat()
+    return {
+        "state": item.get("pipeline_execution_state", "INIT"),
+        "last_watermark": item.get("last_watermark")
     }
 
-    if watermark:
-        item["last_watermark"] = str(watermark)
 
-    table.put_item(Item=item)
+def update_pipeline_state(dynamodb_table, job_name, state, last_watermark=None):
+    update_expr = "SET pipeline_execution_state = :s"
+    expr_vals = {":s": state}
 
+    if last_watermark is not None:
+        update_expr += ", last_watermark = :w"
+        expr_vals[":w"] = last_watermark
 
-# ------------------------------------------------------
-# MySQL Read Logic (CDC + Incremental)
-# ------------------------------------------------------
-def read_mysql_cdc(engine, table, last_watermark, chunk_size):
-    if last_watermark:
-        query = f"""
-            SELECT *,
-                   CASE
-                       WHEN is_deleted = 1 THEN 'D'
-                       WHEN created_at = updated_at THEN 'I'
-                       ELSE 'U'
-                   END AS cdc_op
-            FROM {table}
-            WHERE updated_at > '{last_watermark}'
-            ORDER BY updated_at
-        """
-    else:
-        # First run – full load
-        query = f"""
-            SELECT *,
-                   'I' AS cdc_op
-            FROM {table}
-            ORDER BY updated_at
-        """
-
-    return pd.read_sql(query, engine, chunksize=chunk_size)
-
-
-# ------------------------------------------------------
-# S3 Write Logic
-# ------------------------------------------------------
-def write_to_s3(df, bucket, table):
-    execution_time = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    key = f"raw/{table}/load_ts={execution_time}/{table}.csv"
-
-    buffer = StringIO()
-    df.to_csv(buffer, index=False)
-
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=buffer.getvalue()
+    dynamodb_table.update_item(
+        Key={"pipeline_name": job_name},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_vals
     )
 
-    print(f"[INFO] Written {len(df)} records to s3://{bucket}/{key}")
+    print(f"[INFO] DynamoDB state updated → {state}")
 
 
-# ------------------------------------------------------
-# Main
-# ------------------------------------------------------
+# -------------------------------------------------------------------
+# MYSQL CONNECTION
+# -------------------------------------------------------------------
+def get_mysql_connection(args):
+    return pymysql.connect(
+        host=args.mysql_host,
+        user=args.mysql_user,
+        password=args.mysql_password,
+        database=args.mysql_db,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+
+# -------------------------------------------------------------------
+# MAIN
+# -------------------------------------------------------------------
 def main():
-    print(f"[INFO] Starting Glue job: {JOB_NAME}")
+    args = parse_args()
 
-    # 1. Read pipeline state
-    pipeline_state = get_pipeline_state(ddb_table, JOB_NAME)
-    print(f"[INFO] Current pipeline state: {pipeline_state}")
+    print(f"[INFO] Job started: {args.JOB_NAME}")
 
-    # 2. Read last watermark
-    last_watermark = get_last_watermark(ddb_table, JOB_NAME)
+    # AWS clients
+    dynamodb = boto3.resource("dynamodb")
+    s3 = boto3.client("s3")
+
+    ddb_table = dynamodb.Table(args.ddb_table)
+
+    # Read pipeline state
+    pipeline_meta = get_pipeline_state(ddb_table, args.JOB_NAME)
+    current_state = pipeline_meta["state"]
+    last_watermark = pipeline_meta["last_watermark"]
+
+    print(f"[INFO] Current state: {current_state}")
     print(f"[INFO] Last watermark: {last_watermark}")
 
-    # 3. Mark job as RUNNING
-    update_pipeline_state(
-        ddb_table,
-        JOB_NAME,
-        state="RUNNING",
-        watermark=last_watermark
-    )
+    # Decide FULL vs CDC
+    if current_state == "INIT" or last_watermark is None:
+        print("[INFO] Running FULL load")
+        sql_query = f"SELECT * FROM {args.mysql_table}"
+    else:
+        print("[INFO] Running CDC load")
+        sql_query = f"""
+            SELECT *
+            FROM {args.mysql_table}
+            WHERE updated_at > '{last_watermark}'
+        """
 
-    # 4. MySQL connection
-    engine = create_engine(
-        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
-        f"@{MYSQL_HOST}:3306/{MYSQL_DB}",
-        pool_pre_ping=True,
-        pool_recycle=300
-    )
+    conn = get_mysql_connection(args)
 
-    max_watermark = last_watermark
+    total_rows = 0
+    chunk_index = 0
 
-    # 5. CDC Processing
-    for chunk_df in read_mysql_cdc(
-        engine,
-        MYSQL_TABLE,
-        last_watermark,
-        CHUNK_SIZE
-    ):
+    for chunk_df in pd.read_sql(sql_query, conn, chunksize=args.chunk_size):
         if chunk_df.empty:
             continue
 
-        write_to_s3(chunk_df, S3_BUCKET, MYSQL_TABLE)
+        chunk_index += 1
+        total_rows += len(chunk_df)
 
-        chunk_max = chunk_df["updated_at"].max()
-        if not max_watermark or chunk_max > max_watermark:
-            max_watermark = chunk_max
+        s3_key = (
+            f"raw/{args.mysql_table}/"
+            f"load_date={datetime.utcnow().strftime('%Y-%m-%d')}/"
+            f"part_{chunk_index}.csv"
+        )
 
-    # 6. Mark SUCCESS (only after full completion)
+        csv_buffer = StringIO()
+        chunk_df.to_csv(csv_buffer, index=False)
+
+        s3.put_object(
+            Bucket=args.s3_bucket,
+            Key=s3_key,
+            Body=csv_buffer.getvalue()
+        )
+
+        print(f"[INFO] Uploaded chunk {chunk_index} → s3://{args.s3_bucket}/{s3_key}")
+
+    conn.close()
+
+    print(f"[INFO] Total rows processed: {total_rows}")
+
+    # Update DynamoDB state after success
+    new_watermark = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
     update_pipeline_state(
         ddb_table,
-        JOB_NAME,
+        args.JOB_NAME,
         state="SUCCESS",
-        watermark=max_watermark
+        last_watermark=new_watermark
     )
 
     print("[INFO] Job completed successfully")
 
 
-# ------------------------------------------------------
-# Entry Point with Failure Recovery
-# ------------------------------------------------------
+# -------------------------------------------------------------------
+# ENTRY POINT
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print("[ERROR] Job failed")
-        print(str(e))
-
-        # Mark job as FAILED without corrupting watermark
-        update_pipeline_state(
-            ddb_table,
-            JOB_NAME,
-            state="FAILED"
-        )
+        print(f"[ERROR] Job failed: {str(e)}", file=sys.stderr)
         raise
-

@@ -1,6 +1,14 @@
-venv/
+# AWS CLI local install (DO NOT COMMIT)
+aws/
+awscliv2.zip
+
+# Python bytecode
 __pycache__/
 *.pyc
-.env
-.idea/
-.vscode/
+
+# Virtual environments
+venv/
+
+# OS files
+.DS_Store
+

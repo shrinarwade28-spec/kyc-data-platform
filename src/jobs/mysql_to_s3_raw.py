@@ -91,7 +91,7 @@ def main():
 
     # MySQL Engine
     mysql_url = (
-    f"mysql+pymysql://{args.mysql_user}:{args.mysql_password}"
+    f"mysql+mysqldb://{args.mysql_user}:{args.mysql_password}"
     f"@{args.mysql_host}:3306/{args.mysql_db}"
     )
 
@@ -100,7 +100,6 @@ def main():
     pool_pre_ping=True,
     pool_recycle=300
     )
-
 
 
 

@@ -93,9 +93,15 @@ def main():
     mysql_url = (
     f"mysql+pymysql://{args.mysql_user}:{args.mysql_password}"
     f"@{args.mysql_host}/{args.mysql_db}"
-    "?ssl_disabled=true"
+    "?auth_plugin=mysql_native_password"
     )
-    engine = create_engine(mysql_url)
+
+    engine = create_engine(
+    mysql_url,
+    pool_pre_ping=True,
+    connect_args={"connect_timeout": 10}
+    )
+
 
     max_processed_ts = last_ts
 

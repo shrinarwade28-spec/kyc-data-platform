@@ -103,6 +103,7 @@ def main():
     )
 
 
+
     max_processed_ts = last_ts
 
     try:

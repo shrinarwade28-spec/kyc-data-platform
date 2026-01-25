@@ -92,15 +92,15 @@ def main():
     # MySQL Engine
     mysql_url = (
     f"mysql+pymysql://{args.mysql_user}:{args.mysql_password}"
-    f"@{args.mysql_host}/{args.mysql_db}"
-    "?auth_plugin=mysql_native_password"
+    f"@{args.mysql_host}:3306/{args.mysql_db}"
     )
 
     engine = create_engine(
     mysql_url,
     pool_pre_ping=True,
-    connect_args={"connect_timeout": 10}
+    pool_recycle=300
     )
+
 
 
 

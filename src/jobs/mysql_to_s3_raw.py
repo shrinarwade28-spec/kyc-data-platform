@@ -91,11 +91,11 @@ def main():
 
     # MySQL Engine
     mysql_url = (
-        f"mysql+pymysql://{args.mysql_user}:"
-        f"{args.mysql_password}@{args.mysql_host}/"
-        f"{args.mysql_db}"
+    f"mysql+pymysql://{args.mysql_user}:{args.mysql_password}"
+    f"@{args.mysql_host}/{args.mysql_db}"
+    "?ssl_disabled=true"
     )
-    engine = create_engine(mysql_url,connect_args={"auth_plugin_map":{"mysql_native_password": None}})
+    engine = create_engine(mysql_url)
 
     max_processed_ts = last_ts
 

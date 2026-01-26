@@ -30,19 +30,18 @@ spark.conf.set("spark.app.name", "mysql_to_s3_raw_spark")
 # -------------------------
 # Read Job Arguments
 # -------------------------
-args = dict(arg.split("=", 1) for arg in sys.argv if "=" in arg)
+JOB_NAME    = args["JOB_NAME"]
+MYSQL_HOST = args["mysql_host"]
+MYSQL_DB   = args["mysql_db"]
+MYSQL_TABLE= args["mysql_table"]
+MYSQL_USER = args["mysql_user"]
+MYSQL_PASS = args["mysql_password"]
+S3_BUCKET  = args["s3_bucket"]
+DDB_TABLE  = args["ddb_table"]
 
-JOB_NAME    = args["--JOB_NAME"]
-MYSQL_HOST = args["--mysql_host"]
-MYSQL_DB   = args["--mysql_db"]
-MYSQL_TABLE= args["--mysql_table"]
-MYSQL_USER = args["--mysql_user"]
-MYSQL_PASS = args["--mysql_password"]
-S3_BUCKET  = args["--s3_bucket"]
-DDB_TABLE  = args["--ddb_table"]
+NUM_PARTS  = int(args["num_partitions"])
+FETCH_SIZE = int(args["fetch_size"])
 
-NUM_PARTS  = int(args.get("--num_partitions", "4"))
-FETCH_SIZE = int(args.get("--fetch_size", "10000"))
 
 # -------------------------
 # Spark Session

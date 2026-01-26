@@ -4,8 +4,23 @@ import boto3
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import max as spark_max
 from pyspark.context import SparkContext
+from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
-
+args = getResolvedOptions(
+    sys.argv,
+    [
+        "JOB_NAME",
+        "mysql_host",
+        "mysql_db",
+        "mysql_table",
+        "mysql_user",
+        "mysql_password",
+        "s3_bucket",
+        "ddb_table",
+        "num_partitions",
+        "fetch_size"
+    ]
+)
 sc = SparkContext.getOrCreate()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session

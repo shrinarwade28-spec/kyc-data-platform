@@ -3,6 +3,14 @@ from datetime import datetime
 import boto3
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import max as spark_max
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+
+spark.conf.set("spark.app.name", "mysql_to_s3_raw_spark")
 
 # -------------------------
 # Read Job Arguments

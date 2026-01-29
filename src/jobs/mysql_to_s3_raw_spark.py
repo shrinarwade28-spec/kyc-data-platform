@@ -6,6 +6,10 @@ from pyspark.sql.functions import max as spark_max
 from pyspark.context import SparkContext
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
+
+# --------------------------------------------------
+# Read Glue Job Arguments
+# --------------------------------------------------
 args = getResolvedOptions(
     sys.argv,
     [
@@ -21,47 +25,32 @@ args = getResolvedOptions(
         "fetch_size"
     ]
 )
+
+JOB_NAME     = args["JOB_NAME"]
+MYSQL_HOST  = args["mysql_host"]
+MYSQL_DB    = args["mysql_db"]
+MYSQL_TABLE = args["mysql_table"]
+MYSQL_USER  = args["mysql_user"]
+MYSQL_PASS  = args["mysql_password"]
+S3_BUCKET   = args["s3_bucket"]
+DDB_TABLE   = args["ddb_table"]
+
+NUM_PARTS   = int(args["num_partitions"])
+FETCH_SIZE  = int(args["fetch_size"])
+
+# --------------------------------------------------
+# Spark / Glue Context
+# --------------------------------------------------
 sc = SparkContext.getOrCreate()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 
-spark.conf.set("spark.app.name", "mysql_to_s3_raw_spark")
-
-# -------------------------
-# Read Job Arguments
-# -------------------------
-JOB_NAME    = args["JOB_NAME"]
-MYSQL_HOST = args["mysql_host"]
-MYSQL_DB   = args["mysql_db"]
-MYSQL_TABLE= args["mysql_table"]
-MYSQL_USER = args["mysql_user"]
-MYSQL_PASS = args["mysql_password"]
-S3_BUCKET  = args["s3_bucket"]
-DDB_TABLE  = args["ddb_table"]
-
-NUM_PARTS  = int(args["num_partitions"])
-FETCH_SIZE = int(args["fetch_size"])
-
-if df.rdd.isEmpty():
-    print("[INFO] No new records found. Graceful completion.")
-
-    spark.stop()
-
-    # Structured output (for logs / debugging)
-    print("RESULT={\"status\":\"NO_DATA\",\"record_count\":0}")
-
-    sys.exit(0)
-
-
-# -------------------------
-# Spark Session
-# -------------------------
-spark = SparkSession.builder.appName(JOB_NAME).getOrCreate()
+spark.conf.set("spark.app.name", JOB_NAME)
 spark.sparkContext.setLogLevel("WARN")
 
-# -------------------------
-# DynamoDB – Read Watermark
-# -------------------------
+# --------------------------------------------------
+# DynamoDB – Read Last Watermark
+# --------------------------------------------------
 ddb = boto3.resource("dynamodb")
 state_table = ddb.Table(DDB_TABLE)
 
@@ -70,27 +59,24 @@ last_ts = resp.get("Item", {}).get("last_processed_ts")
 
 print(f"[INFO] Last processed timestamp: {last_ts}")
 
-# -------------------------
+# --------------------------------------------------
 # JDBC Configuration
-# -------------------------
+# --------------------------------------------------
 jdbc_url = (
     f"jdbc:mysql://{MYSQL_HOST}:3306/{MYSQL_DB}"
     "?useSSL=false&allowPublicKeyRetrieval=true"
 )
 
-base_query = f"""
-SELECT *
-FROM {MYSQL_TABLE}
-"""
+base_query = f"SELECT * FROM {MYSQL_TABLE}"
 
 if last_ts:
     base_query += f" WHERE updated_at > '{last_ts}'"
 
 jdbc_query = f"({base_query}) AS src"
 
-# -------------------------
-# Parallel JDBC Read
-# -------------------------
+# --------------------------------------------------
+# Read from MySQL via JDBC (df ALWAYS CREATED)
+# --------------------------------------------------
 df = (
     spark.read
     .format("jdbc")
@@ -104,22 +90,25 @@ df = (
     .load()
 )
 
+# --------------------------------------------------
+# NO DATA HANDLING (IMPORTANT FOR ORCHESTRATION)
+# --------------------------------------------------
 if df.rdd.isEmpty():
     print("[INFO] No new records found. Graceful completion.")
 
+    result = {
+        "status": "NO_DATA",
+        "record_count": 0
+    }
+
+    print(f"RESULT={result}")
+
     spark.stop()
-
-    # Structured output for Step Functions
-    print("RESULT={\"status\":\"NO_DATA\",\"record_count\":0}")
-
     sys.exit(0)
 
-
-
-
-# -------------------------
-# Write to S3 (Raw Zone)
-# -------------------------
+# --------------------------------------------------
+# Write to S3 – RAW Zone
+# --------------------------------------------------
 load_date = datetime.utcnow().date()
 
 target_path = (
@@ -136,9 +125,9 @@ target_path = (
 
 print(f"[INFO] Written data to {target_path}")
 
-# -------------------------
-# Update Watermark in DynamoDB
-# -------------------------
+# --------------------------------------------------
+# Update DynamoDB Watermark
+# --------------------------------------------------
 max_ts = df.select(spark_max("updated_at")).collect()[0][0]
 
 state_table.put_item(
@@ -148,18 +137,20 @@ state_table.put_item(
     }
 )
 
-print(f"[INFO] Updated watermark to {max_ts}")
-
-spark.stop()
-
+# --------------------------------------------------
+# Final Metrics (for Step Functions)
+# --------------------------------------------------
 record_count = df.count()
 
-print(f"[INFO] Records processed: {record_count}")
-
-# Return structured output for Step Functions
 result = {
     "status": "SUCCESS",
-    "record_count": record_count
+    "record_count": record_count,
+    "max_updated_at": str(max_ts)
 }
 
+print(f"[INFO] Records processed: {record_count}")
 print(f"RESULT={result}")
+
+spark.stop()
+sys.exit(0)
+

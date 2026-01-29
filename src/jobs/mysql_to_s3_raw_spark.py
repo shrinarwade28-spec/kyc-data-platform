@@ -93,6 +93,9 @@ df = (
 # --------------------------------------------------
 # NO DATA HANDLING (IMPORTANT FOR ORCHESTRATION)
 # --------------------------------------------------
+# --------------------------------------------------
+# NO DATA HANDLING (Glue-safe)
+# --------------------------------------------------
 if df.rdd.isEmpty():
     print("[INFO] No new records found. Graceful completion.")
 
@@ -104,7 +107,8 @@ if df.rdd.isEmpty():
     print(f"RESULT={result}")
 
     spark.stop()
-    sys.exit(0)
+    return
+
 
 # --------------------------------------------------
 # Write to S3 – RAW Zone
@@ -152,5 +156,4 @@ print(f"[INFO] Records processed: {record_count}")
 print(f"RESULT={result}")
 
 spark.stop()
-sys.exit(0)
 

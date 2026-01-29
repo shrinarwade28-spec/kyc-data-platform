@@ -92,14 +92,7 @@ df = (
 # NO DATA HANDLING
 # -------------------------
 if df.rdd.isEmpty():
-    print("[INFO] No new records found. Graceful completion.")
-
-    result = {
-        "status": "NO_DATA",
-        "record_count": 0
-    }
-
-    print(f"RESULT={result}")
+    print("[INFO] No new records found. Skipping S3 write.")
     spark.stop()
     # Script ends naturally
 
@@ -113,6 +106,7 @@ else:
         f"load_date={load_date}/"
     )
 
+
     df.write.mode("append").parquet(target_path)
     print(f"[INFO] Written data to {target_path}")
 
@@ -124,7 +118,8 @@ else:
     state_table.put_item(
         Item={
             "pipeline_name": JOB_NAME,
-            "last_processed_ts": str(max_ts)
+            "last_processed_ts": str(max_ts),
+            "updated_at": datetime.utcnow().isoformat()
         }
     )
 
@@ -135,6 +130,7 @@ else:
         "record_count": record_count
     }
 
-    print(f"RESULT={result}")
+
+    print(f"[INFO] Updated watermark to {max_ts}")
     spark.stop()
 

@@ -95,9 +95,11 @@ df = (
 )
 
 if df.rdd.isEmpty():
-    print("[INFO] No new records found. Exiting.")
+    print("[INFO] No new records found. Graceful completion.")
+    job.commit()
     spark.stop()
-    sys.exit(0)
+    return
+
 
 # -------------------------
 # Write to S3 (Raw Zone)

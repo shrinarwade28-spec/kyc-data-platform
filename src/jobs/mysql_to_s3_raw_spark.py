@@ -7,9 +7,9 @@ from pyspark.context import SparkContext
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 
-# --------------------------------------------------
-# Read Glue Job Arguments
-# --------------------------------------------------
+# -------------------------
+# Resolve Glue Arguments
+# -------------------------
 args = getResolvedOptions(
     sys.argv,
     [
@@ -38,19 +38,18 @@ DDB_TABLE   = args["ddb_table"]
 NUM_PARTS   = int(args["num_partitions"])
 FETCH_SIZE  = int(args["fetch_size"])
 
-# --------------------------------------------------
+# -------------------------
 # Spark / Glue Context
-# --------------------------------------------------
+# -------------------------
 sc = SparkContext.getOrCreate()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
-
-spark.conf.set("spark.app.name", JOB_NAME)
 spark.sparkContext.setLogLevel("WARN")
+spark.conf.set("spark.app.name", JOB_NAME)
 
-# --------------------------------------------------
-# DynamoDB – Read Last Watermark
-# --------------------------------------------------
+# -------------------------
+# DynamoDB – Read Watermark
+# -------------------------
 ddb = boto3.resource("dynamodb")
 state_table = ddb.Table(DDB_TABLE)
 
@@ -59,24 +58,23 @@ last_ts = resp.get("Item", {}).get("last_processed_ts")
 
 print(f"[INFO] Last processed timestamp: {last_ts}")
 
-# --------------------------------------------------
+# -------------------------
 # JDBC Configuration
-# --------------------------------------------------
+# -------------------------
 jdbc_url = (
     f"jdbc:mysql://{MYSQL_HOST}:3306/{MYSQL_DB}"
     "?useSSL=false&allowPublicKeyRetrieval=true"
 )
 
 base_query = f"SELECT * FROM {MYSQL_TABLE}"
-
 if last_ts:
     base_query += f" WHERE updated_at > '{last_ts}'"
 
 jdbc_query = f"({base_query}) AS src"
 
-# --------------------------------------------------
-# Read from MySQL via JDBC (df ALWAYS CREATED)
-# --------------------------------------------------
+# -------------------------
+# Read from MySQL via JDBC
+# -------------------------
 df = (
     spark.read
     .format("jdbc")
@@ -90,12 +88,9 @@ df = (
     .load()
 )
 
-# --------------------------------------------------
-# NO DATA HANDLING (IMPORTANT FOR ORCHESTRATION)
-# --------------------------------------------------
-# --------------------------------------------------
-# NO DATA HANDLING (Glue-safe)
-# --------------------------------------------------
+# -------------------------
+# NO DATA HANDLING
+# -------------------------
 if df.rdd.isEmpty():
     print("[INFO] No new records found. Graceful completion.")
 
@@ -105,55 +100,41 @@ if df.rdd.isEmpty():
     }
 
     print(f"RESULT={result}")
-
     spark.stop()
-    return
+    # Script ends naturally
 
+else:
+    # -------------------------
+    # Write to S3 (Raw Zone)
+    # -------------------------
+    load_date = datetime.utcnow().date()
+    target_path = (
+        f"s3://{S3_BUCKET}/raw/{MYSQL_TABLE}/"
+        f"load_date={load_date}/"
+    )
 
-# --------------------------------------------------
-# Write to S3 – RAW Zone
-# --------------------------------------------------
-load_date = datetime.utcnow().date()
+    df.write.mode("append").parquet(target_path)
+    print(f"[INFO] Written data to {target_path}")
 
-target_path = (
-    f"s3://{S3_BUCKET}/raw/{MYSQL_TABLE}/"
-    f"load_date={load_date}/"
-)
+    # -------------------------
+    # Update DynamoDB Watermark
+    # -------------------------
+    max_ts = df.select(spark_max("updated_at")).collect()[0][0]
 
-(
-    df
-    .write
-    .mode("append")
-    .parquet(target_path)
-)
+    state_table.put_item(
+        Item={
+            "pipeline_name": JOB_NAME,
+            "last_processed_ts": str(max_ts)
+        }
+    )
 
-print(f"[INFO] Written data to {target_path}")
+    record_count = df.count()
 
-# --------------------------------------------------
-# Update DynamoDB Watermark
-# --------------------------------------------------
-max_ts = df.select(spark_max("updated_at")).collect()[0][0]
-
-state_table.put_item(
-    Item={
-        "pipeline_name": JOB_NAME,
-        "last_processed_ts": str(max_ts)
+    result = {
+        "status": "SUCCESS",
+        "record_count": record_count
     }
-)
 
-# --------------------------------------------------
-# Final Metrics (for Step Functions)
-# --------------------------------------------------
-record_count = df.count()
-
-result = {
-    "status": "SUCCESS",
-    "record_count": record_count,
-    "max_updated_at": str(max_ts)
-}
-
-print(f"[INFO] Records processed: {record_count}")
-print(f"RESULT={result}")
-
-spark.stop()
+    print(f"RESULT={result}")
+    spark.stop()
 

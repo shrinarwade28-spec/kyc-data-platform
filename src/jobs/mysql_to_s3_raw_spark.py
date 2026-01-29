@@ -42,6 +42,16 @@ DDB_TABLE  = args["ddb_table"]
 NUM_PARTS  = int(args["num_partitions"])
 FETCH_SIZE = int(args["fetch_size"])
 
+if df.rdd.isEmpty():
+    print("[INFO] No new records found. Graceful completion.")
+
+    spark.stop()
+
+    # Structured output (for logs / debugging)
+    print("RESULT={\"status\":\"NO_DATA\",\"record_count\":0}")
+
+    sys.exit(0)
+
 
 # -------------------------
 # Spark Session
@@ -96,8 +106,14 @@ df = (
 
 if df.rdd.isEmpty():
     print("[INFO] No new records found. Graceful completion.")
-    job.commit()
+
     spark.stop()
+
+    # Structured output for Step Functions
+    print("RESULT={\"status\":\"NO_DATA\",\"record_count\":0}")
+
+    sys.exit(0)
+
 
 
 

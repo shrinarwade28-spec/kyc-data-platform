@@ -98,7 +98,7 @@ if df.rdd.isEmpty():
     print("[INFO] No new records found. Graceful completion.")
     job.commit()
     spark.stop()
-    return
+
 
 
 # -------------------------

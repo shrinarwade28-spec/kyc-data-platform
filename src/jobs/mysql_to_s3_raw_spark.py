@@ -136,3 +136,14 @@ print(f"[INFO] Updated watermark to {max_ts}")
 
 spark.stop()
 
+record_count = df.count()
+
+print(f"[INFO] Records processed: {record_count}")
+
+# Return structured output for Step Functions
+result = {
+    "status": "SUCCESS",
+    "record_count": record_count
+}
+
+print(f"RESULT={result}")
